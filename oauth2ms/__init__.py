@@ -34,26 +34,10 @@ import base64
 import gnupg
 import io
 
-pp = pprint.PrettyPrinter(indent=4)
-
-credentials_file = save_data_path("oauth2ms") + "/credentials.bin"
-
-_LOGGER = logging.getLogger(__name__)
 
 APP_NAME = "oauth2ms"
 SUCCESS_MESSAGE = "Authorization complete."
-
-parser = argparse.ArgumentParser()
-parser.add_argument("--encode-xoauth2", action="store_true", default=False,
-                    help="Print xoauth2 encoded token instead of the plain token")
-parser.add_argument("-e", "--encrypt-using-fingerprint", action="store", default=None,
-                    help="Use gpg encryption to encrypt/decrypt the token cache. Argument is the fingerprint/email to be used")
-parser.add_argument("--gpg-home", action="store", default=None,
-                    help="Set the gpg home directory")
-parser.add_argument("--no-browser", action="store_true", default=False,
-                    help="Don't open a browser with URL. Instead print the URL. Useful inside virtualized environments like WSL.")
-
-cmdline_args = parser.parse_args()
+_LOGGER = logging.getLogger(__name__)
 
 
 def load_config():
@@ -109,7 +93,7 @@ def validate_config(config):
 
     return all(conditions)
 
-def build_new_app_state(crypt):
+def build_new_app_state(crypt, no_browser: bool = False):
     cache = msal.SerializableTokenCache()
     config = load_config()
     if config is None:
@@ -136,7 +120,7 @@ def build_new_app_state(crypt):
                                             int(config['redirect_port']),
                                             wsgi_app,
                                             handler_class=WSGIRequestHandler)
-    if cmdline_args.no_browser:
+    if no_browser:
         print("Please navigate to this url: " + auth_url)
     else:
         webbrowser.open(auth_url, new=2, autoraise=True)
@@ -182,7 +166,7 @@ def fetch_token_from_cache(app):
     else:
         None
 
-def build_app_state_from_credentials(crypt):
+def build_app_state_from_credentials(crypt, credentials_file):
     # If the file is missing return None
     if not os.path.exists(credentials_file):
         return None
@@ -227,39 +211,62 @@ def encode_xoauth2(app, token):
     xoauth2_bytes = user + C_A + btoken + C_A + C_A
     return base64.b64encode(xoauth2_bytes).decode("utf-8")
 
-crypt = None
-if cmdline_args.encrypt_using_fingerprint:
-    gpg_args = {"gnupghome": cmdline_args.gpg_home} if cmdline_args.gpg_home else {}
-    gpg = gnupg.GPG(**gpg_args)
-    crypt = {"gpg" : gpg,
-             "fingerprint": cmdline_args.encrypt_using_fingerprint}
 
-token = None
-app_state = build_app_state_from_credentials(crypt)
-if app_state is None:
-    app_state, token = build_new_app_state(crypt)
+def main():
+    pp = pprint.PrettyPrinter(indent=4)
 
-if app_state is None:
-    print("Something went wrong!")
-    sys.exit(1)
+    # credentials_file = save_data_path("oauth2ms") + "/credentials.bin"
+    credentials_file = save_data_path("oauth2ms") + "/config.json"
 
-if token is None:
-    token = fetch_token_from_cache(app_state)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--encode-xoauth2", action="store_true", default=False,
+                        help="Print xoauth2 encoded token instead of the plain token")
+    parser.add_argument("-e", "--encrypt-using-fingerprint", action="store", default=None,
+                        help="Use gpg encryption to encrypt/decrypt the token cache. Argument is the fingerprint/email to be used")
+    parser.add_argument("--gpg-home", action="store", default=None,
+                        help="Set the gpg home directory")
+    parser.add_argument("--no-browser", action="store_true", default=False,
+                        help="Don't open a browser with URL. Instead print the URL. Useful inside virtualized environments like WSL.")
 
-if token is not None:
-    if cmdline_args.encode_xoauth2:
-        print(encode_xoauth2(app_state, token))
-    else:
-        print(token);
+    cmdline_args = parser.parse_args()
 
-cache = app_state['cache']
-if cache.has_state_changed:
-    config = app_state["config"]
-    config["token_cache"] = cache.serialize()
-    config_json = json.dumps(config)
-    crypt = app_state.get("crypt")
-    if crypt:
-        gpg = crypt["gpg"]
-        fingerprint = crypt["fingerprint"]
-        config_json = str(gpg.encrypt(config_json, fingerprint))
-    open(credentials_file, "w").write(config_json)
+    crypt = None
+    if cmdline_args.encrypt_using_fingerprint:
+        gpg_args = {"gnupghome": cmdline_args.gpg_home} if cmdline_args.gpg_home else {}
+        gpg = gnupg.GPG(**gpg_args)
+        crypt = {"gpg" : gpg,
+                 "fingerprint": cmdline_args.encrypt_using_fingerprint}
+
+    token = None
+    app_state = build_app_state_from_credentials(crypt, credentials_file)
+    if app_state is None:
+        app_state, token = build_new_app_state(crypt, cmdline_args.no_browser)
+
+    if app_state is None:
+        print("Something went wrong!")
+        sys.exit(1)
+
+    if token is None:
+        token = fetch_token_from_cache(app_state)
+
+    if token is not None:
+        if cmdline_args.encode_xoauth2:
+            print(encode_xoauth2(app_state, token))
+        else:
+            print(token)
+
+    cache = app_state['cache']
+    if cache.has_state_changed:
+        config = app_state["config"]
+        config["token_cache"] = cache.serialize()
+        config_json = json.dumps(config)
+        crypt = app_state.get("crypt")
+        if crypt:
+            gpg = crypt["gpg"]
+            fingerprint = crypt["fingerprint"]
+            config_json = str(gpg.encrypt(config_json, fingerprint))
+        open(credentials_file, "w").write(config_json)
+
+
+if __name__ == "__main__":
+    main()
